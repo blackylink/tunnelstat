@@ -6,9 +6,13 @@
 
 **A 343 KB Windows overlay that shows live VPN tunnel speed and connection health.**
 
-No driver · No admin rights · **Zero network traffic** · 1.7 MB private RAM · 0.43 % CPU
+No driver · No admin rights · **Zero network traffic** · 1.9 MB private RAM · 0.43 % CPU
 
-[Download](https://github.com/OWNER/tunnelstat/releases) · [Report an issue](https://github.com/OWNER/tunnelstat/issues) · [License](LICENSE)
+[![CI](https://github.com/blackylink/tunnelstat/actions/workflows/ci.yml/badge.svg)](https://github.com/blackylink/tunnelstat/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/release/blackylink/tunnelstat.svg)](https://github.com/blackylink/tunnelstat/releases)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+[Download](https://github.com/blackylink/tunnelstat/releases) · [Report an issue](https://github.com/blackylink/tunnelstat/issues) · [Build it yourself](#development)
 
 </div>
 
@@ -65,7 +69,7 @@ TUNNELSTAT_DEBUG=1 .\tunnelstat.exe
 
 ## Install
 
-Grab `tunnelstat.exe` from [Releases](https://github.com/OWNER/tunnelstat/releases). That is
+Grab `tunnelstat.exe` from [Releases](https://github.com/blackylink/tunnelstat/releases). That is
 the entire install — copy it anywhere and run it. Single self-contained binary.
 
 Requires **Windows 10 1903+ / Windows 11, x64**. No installer, no registry, no dependencies.
@@ -165,6 +169,16 @@ paths on purpose: windres shells out to `cc1`, which does not quote paths contai
 CI builds and smoke-tests on GitHub's Windows runners — clean installs, no VPN adapter, no
 admin rights, different DPI. That is also how this project gets verified on a machine other
 than the author's.
+
+## Why not just use Task Manager
+
+Because the panel is *always there* and answers a different question. Task Manager shows you
+aggregate traffic and nothing about your tunnel. `tunnelstat` watches one specific interface
+and tells you whether bytes are actually flowing through your VPN or around it — the question
+that matters when the connection feels wrong but you cannot point at anything.
+
+It also stays out of the way: click-through, no Alt+Tab entry, no taskbar button, draggable,
+and it hides entirely when it is not needed.
 
 ## Topics
 
