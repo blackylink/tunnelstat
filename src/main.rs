@@ -235,9 +235,18 @@ struct App {
     samples: Vec<f64>,
     loss_score: u32,
     zero_ticks: u32,
+    leak_ticks: u32,
+    /// Сырое доказательство обхода маршрутизации за текущий тик.
+    leak_evidence: bool,
     last_poll: std::time::Instant,
+    /// Сырая скорость туннеля за последнюю секунду. Только для расчётов.
     down: f64,
     up: f64,
+    /// Сглаженная скорость для показа на панели: у прыжкового трафика
+    /// (браузер, загрузки) между пачками пакетов сырое значение равно нулю
+    /// и индикатор мигал «0 B/s». См. `SPEED_TAU`.
+    shown_down: f64,
+    shown_up: f64,
     phys_total: f64,
     gfx: Gfx,
     hwnd: HWND,
@@ -314,6 +323,8 @@ impl App {
             self.zero_ticks = 0;
             self.down = 0.0;
             self.up = 0.0;
+            self.shown_down = 0.0;
+            self.shown_up = 0.0;
             self.phys_total = 0.0;
             self.tunnel = None;
         }
@@ -416,14 +427,47 @@ impl App {
         self.down = d;
         self.up = u;
 
+        // Сглаживание только для показа. Сырая скорость за одну секунду у
+        // прыжкового трафика честно равна нулю между пачками пакетов, из-за чего
+        // число постоянно подпрыгивало на «0 B/s». Экспоненциальное среднее с
+        // постоянной 3 секунды: всплеск виден сразу, между пакетами число не
+        // обнуляется, а после 3 секунд настоящего простоя честно показывает 0.
+        const SPEED_TAU: f64 = 3.0;
+        let alpha = (dt / (dt + SPEED_TAU)).clamp(0.0, 1.0);
+        self.shown_down += (d - self.shown_down) * alpha;
+        self.shown_up += (u - self.shown_up) * alpha;
+        // Ниже 1 B/s разница неразличима, не показываем «0.00 B/s» из-за шума.
+        if self.shown_down < 1.0 {
+            self.shown_down = 0.0;
+        }
+        if self.shown_up < 1.0 {
+            self.shown_up = 0.0;
+        }
+
         // При исправном VPN по физическому адаптеру идёт сам зашифрованный туннель,
         // поэтому сравниваем его с трафиком туннеля, а не считаем утечкой сам по себе.
-        self.phys_total = cur
+        //
+        // ВАЖНО: Windows создаёт «лёгкие» фильтр-драйверы (LightWeight Filter),
+        // которые зеркалят счётчики родительского адаптера байт в байт. Стоит
+        // установленный ExpressVPN, и на его Wi-Fi висело 6 копий с одинаковыми
+        // InOctets/OutOctets. Если их сложить, скорость в 7 раз завышается, и
+        // условие «физический адаптер грузится» срабатывает на пустом месте.
+        // Поэтому дубликаты по идентичным счётчикам отбрасываем.
+        let mut phys = 0.0f64;
+        let mut seen: Vec<(u64, u64)> = Vec::new();
+        for s in cur
             .iter()
             .filter(|s| is_physical(s) && Some(s.idx) != self.tunnel)
-            .filter_map(|s| self.rates.get(&s.idx))
-            .map(|(d, u)| d + u)
-            .sum();
+        {
+            if seen.contains(&(s.in_oct, s.out_oct)) {
+                continue; // зеркало того же трафика
+            }
+            seen.push((s.in_oct, s.out_oct));
+            if let Some((d, u)) = self.rates.get(&s.idx) {
+                phys += d + u;
+            }
+        }
+        self.phys_total = phys;
 
         // Сколько секунд подряд через туннель не идёт ни байта.
         if d + u < 1024.0 {
@@ -443,6 +487,29 @@ impl App {
             self.samples.remove(0);
         }
 
+        // Доказательство обхода маршрутизации считаем здесь, где есть &mut self:
+        // (A) туннель НЕ держит маршрут по умолчанию — это факт таблицы
+        //     маршрутизации, ошибиться в нём нельзя.
+        // (B) туннель держит маршрут, но через него 10+ секунд пусто, пока
+        //     физический адаптер гонит больше мегабайта в секунду.
+        //
+        // Порог для (B) намеренно грубый. На практике физический адаптер несёт
+        // заметно больше, чем туннель: оверхед шифрования, трафик мимо TUN
+        // (PowerShell, обновления, QUIC), и разная частота обновления счётчиков.
+        // При мягком пороге это давало постоянные ложные «утечки».
+        self.leak_evidence = match self.tunnel {
+            Some(t) if self.prev.get(&t).is_some_and(|s| s.link_up) => {
+                let route_gone = unsafe { default_route_ifindex(Some(t)) } != Some(t);
+                let silent = self.zero_ticks >= 10 && self.phys_total > 1024.0 * 1024.0;
+                route_gone || silent
+            }
+            _ => false,
+        };
+        self.leak_ticks = if self.leak_evidence {
+            self.leak_ticks.saturating_add(1)
+        } else {
+            0
+        };
         self.prev = cur.into_iter().map(|s| (s.idx, s)).collect();
         self.render();
     }
@@ -477,14 +544,12 @@ impl App {
 
         // ── Красный: только доказуемые факты, без эвристик ──
         //
-        // (A) туннель поднят, но НЕ держит маршрут по умолчанию ⇒ трафик
-        //     физически не идёт через него.
-        if unsafe { default_route_ifindex(Some(tun)) } != Some(tun) {
-            return State::Leak;
-        }
-        // (B) туннель держит маршрут, но через него 5+ секунд не идёт ни байта,
-        //     тогда как физический адаптер активно грузится ⇒ трафик в обход.
-        if self.zero_ticks >= 5 && self.phys_total > 32.0 * 1024.0 {
+        // Оба условия подтверждаются несколько секунд подряд. Ложная "утечка"
+        // мигала при каждом всплеске трафика, потому что решение принималось
+        // по одному-единственному замеру. Утечка - это устойчивое состояние
+        // маршрутизации, а не мгновение.
+        let leak_evidence = self.leak_evidence;
+        if leak_evidence && self.leak_ticks >= 5 {
             return State::Leak;
         }
 
@@ -519,13 +584,17 @@ impl App {
                 .unwrap_or_else(|| "нет".into());
             let cvs = cv(&self.samples);
             diag(&format!(
-                "tun={} down={:.0} up={:.0} phys={:.0} ratio={:.2} loss={} n={} cv={:.3} => {:?}",
+                "tun={} down={:.0} up={:.0} shown={:.0}/{:.0} phys={:.0} ratio={:.2} loss={} zero={} leakT={} n={} cv={:.3} => {:?}",
                 tname,
                 self.down,
                 self.up,
+                self.shown_down,
+                self.shown_up,
                 self.phys_total,
                 self.phys_total / (self.down + self.up).max(1.0),
                 self.loss_score,
+                self.zero_ticks,
+                self.leak_ticks,
                 self.samples.len(),
                 cvs,
                 st
@@ -640,8 +709,8 @@ impl App {
             let old = SelectObject(dc, HGDIOBJ(self.gfx.f_bold.0));
             let mut l1 = wide(&format!(
                 "↓ {}   ↑ {}",
-                fmt_speed(self.down),
-                fmt_speed(self.up)
+                fmt_speed(self.shown_down),
+                fmt_speed(self.shown_up)
             ));
             let mut r1 = RECT {
                 left: tx,
@@ -1449,9 +1518,13 @@ fn main() {
             samples: Vec::new(),
             loss_score: 0,
             zero_ticks: 0,
+            leak_ticks: 0,
+            leak_evidence: false,
             last_poll: std::time::Instant::now(),
             down: 0.0,
             up: 0.0,
+            shown_down: 0.0,
+            shown_up: 0.0,
             phys_total: 0.0,
             gfx,
             hwnd,

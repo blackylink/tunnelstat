@@ -31,7 +31,7 @@ A small always-on-top panel that sits over your windows and shows:
 | `stable` | 🟢 green | no packet loss, tunnel link up |
 | `unstable` | 🟡 yellow | loss was seen, or very spiky throughput |
 | `dropped` | 🟠 orange | 4+ seconds of consecutive loss, or the tunnel link fell |
-| `leak: traffic bypassing VPN` | 🔴 red | the tunnel does **not** hold the default route, or it holds it but nothing passes while your NIC is busy |
+| `leak: traffic bypassing VPN` | 🔴 red | the tunnel does **not** hold the default route, or it holds it but stayed silent for 10 s while your NIC pushed over 1 MB/s. Either signal must persist 5 s before red shows |
 | `VPN is down` | ⚪ grey | no tunnel adapter found |
 
 <div align="center">
@@ -149,6 +149,20 @@ Stated plainly, because a health indicator that lies is worse than no indicator:
 
 5. **Throughput variance mostly reflects your traffic, not the link.** That is why the yellow
    state is driven by loss counters, with variance only as a secondary hint.
+
+6. **If your VPN runs in local-proxy mode, the numbers are relative to the tunnel adapter,
+   not to your downloads.** With a system proxy (for example `127.0.0.1:10809`) the browser
+   talks to the proxy over loopback, which no interface counter can see, and the proxy's
+   own I/O shows up on the tunnel with the *opposite* direction. A download can therefore
+   read as tunnel upload. Check whether your client uses TUN or proxy mode before
+   trusting the direction arrows.
+
+7. **Red needs strong evidence, on purpose.** Windows creates LightWeight Filter adapters
+   that mirror the parent's byte counters exactly. With a second VPN client installed, one
+   physical NIC was reported as seven identical adapters, which inflated the physical-side
+   throughput 7x and made a healthy tunnel look like a leak. Identical counter pairs are
+   now de-duplicated, the "silent tunnel under load" rule requires 10 s of silence plus
+   over 1 MB/s, and red must hold for 5 s. An earlier, looser version cried wolf.
 
 ## Development
 
