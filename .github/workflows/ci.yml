@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  build:
+    name: Build and smoke-test (Windows x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mingw (windres for icon/manifest resources)
+        run: choco install mingw --no-progress -y
+
+      - name: Add mingw to PATH
+        run: echo "C:\ProgramData\mingw64\mingw64\bin" >> $env:GITHUB_PATH
+
+      - name: Install Rust (GNU host)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-gnu
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release
+        run: cargo build --release
+
+      # A clean runner is a genuinely different machine from the author's laptop:
+      # no VPN adapter, different DPI, fresh Windows install. That is exactly the
+      # "does it launch somewhere else" check this project needs.
+      - name: Smoke-test (no VPN present, no admin)
+        shell: pwsh
+        run: |
+          $exe = "target\release\vpnstat.exe"
+          if (-not (Test-Path $exe)) { throw "binary not produced" }
+          $len = (Get-Item $exe).Length
+          "binary: $len bytes"
+          if ($len -gt 900000) { throw "binary unexpectedly large: $len" }
+
+          $p = Start-Process $exe -PassThru
+          Start-Sleep -Seconds 8
+          if ($p.HasExited) { throw "process exited early, code $($p.ExitCode)" }
+
+          $live = Get-Process -Id $p.Id -ErrorAction SilentlyContinue
+          if (-not $live) { throw "process not running" }
+          "WS     : {0:N2} MB" -f ($live.WorkingSet64/1MB)
+          "Private: {0:N2} MB" -f ($live.PrivateMemorySize64/1MB)
+          if ($live.PrivateMemorySize64 -gt 40MB) {
+            throw "private memory too high: $($live.PrivateMemorySize64)"
+          }
+
+          # Second instance must refuse to start (single-instance mutex).
+          $p2 = Start-Process $exe -PassThru
+          Start-Sleep -Seconds 4
+          $n = @(Get-Process vpnstat -ErrorAction SilentlyContinue).Count
+          if ($n -ne 1) { throw "single-instance guard failed: $n processes" }
+
+          Get-Process vpnstat -ErrorAction SilentlyContinue | Stop-Process -Force
+          "smoke test OK"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vpnstat-windows-x64
+          path: target/release/vpnstat.exe
+
+  cross-check:
+    name: clippy + fmt
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install mingw
+        run: choco install mingw --no-progress -y
+      - name: Add mingw to PATH
+        run: echo "C:\ProgramData\mingw64\mingw64\bin" >> $env:GITHUB_PATH
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-gnu
+          components: clippy, rustfmt
+      - run: cargo fmt --check
+      - run: cargo clippy --release

@@ -1,0 +1,14 @@
+# Нормализуем окончания строк: в репозитории LF, чтобы диффы не шумели.
+* text=auto eol=lf
+
+# PowerShell и манифест Windows — CRLF, иначе ломаются на свежем Windows.
+*.ps1   text eol=crlf
+*.rc    text eol=crlf
+*.manifest text eol=crlf
+*.bat   text eol=crlf
+
+# Бинарные файлы не трогаем.
+*.ico   binary
+*.png   binary
+*.jpg   binary
+*.exe   binary

@@ -1,0 +1,17 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Диагностика
+vpnstat.log
+soak.csv
+
+# Windows
+Thumbs.db
+desktop.ini
+*.lnk
+
+# IDE
+.idea/
+.vscode/
+*.swp
