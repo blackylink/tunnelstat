@@ -1,6 +1,6 @@
-# Генератор vpnstat.ico: рисует иконку в нескольких размерах и собирает ICO.
+# Генератор tunnelstat.ico: рисует иконку в нескольких размерах и собирает ICO.
 # Запуск: powershell -ExecutionPolicy Bypass -File make_icon.ps1
-param([string]$Out = "vpnstat.ico")
+param([string]$Out = "tunnelstat.ico")
 
 Add-Type -AssemblyName System.Drawing
 

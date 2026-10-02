@@ -6,7 +6,7 @@ use std::process::Command;
 
 fn main() {
     let out = std::env::var("OUT_DIR").expect("OUT_DIR");
-    let res = PathBuf::from(&out).join("vpnstat.res");
+    let res = PathBuf::from(&out).join("tunnelstat.res");
     let _ = &out;
 
     // Ищем windres рядом с rustc/cargo или в mingw из PATH.
@@ -16,9 +16,9 @@ fn main() {
 
     // ВАЖНО: путь к .rc даём относительным. windres зовёт препроцессор cc1,
     // который не экранирует пробелы, и абсолютный путь вида
-    // "C:\...\web projects\web\vpnstat.rc" распадается на аргументы.
+    // "<path>\tunnelstat.rc" распадается на аргументы.
     // Текущий каталог build-скрипта — это корень пакета, поэтому хватит имени файла.
-    let rc = "vpnstat.rc";
+    let rc = "tunnelstat.rc";
     let mut cmd = Command::new(&windres);
     cmd.current_dir(std::env::current_dir().unwrap());
     cmd.arg(rc)
@@ -40,9 +40,9 @@ fn main() {
     assert!(res.exists(), "windres не создал {}", res.display());
 
     println!("cargo:rustc-link-arg={}", res.display());
-    println!("cargo:rerun-if-changed=vpnstat.rc");
-    println!("cargo:rerun-if-changed=vpnstat.ico");
-    println!("cargo:rerun-if-changed=vpnstat.manifest");
+    println!("cargo:rerun-if-changed=tunnelstat.rc");
+    println!("cargo:rerun-if-changed=tunnelstat.ico");
+    println!("cargo:rerun-if-changed=tunnelstat.manifest");
 }
 
 fn find_windres() -> Option<PathBuf> {

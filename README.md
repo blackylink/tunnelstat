@@ -35,7 +35,7 @@ A small always-on-top panel that sits over your windows and shows:
 | `VPN is down` | ⚪ grey | no tunnel adapter found |
 
 <div align="center">
-<img src="docs/state-unstable.png" width="200"> <img src="docs/state-dropped.png" width="200"> <img src="docs/state-leak.png" width="200">
+<img src="docs/state-unstable.png" width="200"> <img src="docs/state-dropped.png" width="200"> <img src="docs/state-leak.png" width="200"> <img src="docs/state-vpn-down.png" width="200">
 </div>
 
 ## One of the lightest tools in this category
