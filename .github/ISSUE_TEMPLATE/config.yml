@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/blackylink/tunnelstat/security/advisories/new
+    about: Please report privately instead of opening a public issue.
+  - name: Question or usage help
+    url: https://github.com/blackylink/tunnelstat/discussions
+    about: Ask here; no bug involved.

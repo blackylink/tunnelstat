@@ -1,0 +1,67 @@
+name: Bug report
+description: Something behaves incorrectly
+labels: bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Auto-detection problems are the most common cause of
+        "wrong state" reports, so the adapter name below matters.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did the panel show, and what did you expect?
+      placeholder: "Panel shows `leak: traffic bypassing VPN`, but my VPN works fine."
+    validations:
+      required: true
+
+  - type: textarea
+    id: adapter
+    attributes:
+      label: VPN adapter name
+      description: Output of `ipconfig /all`, or the InterfaceAlias column of `Get-NetAdapter`.
+      render: text
+    validations:
+      required: true
+
+  - type: dropdown
+    id: client
+    attributes:
+      label: VPN client
+      options:
+        - sing-box
+        - xray / v2ray
+        - Clash / Mihomo
+        - WireGuard
+        - Amnezia
+        - Outline
+        - Hiddify
+        - Happ
+        - other
+        - not applicable
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version and display scaling
+      placeholder: Windows 11 24H2, 200% scaling
+    validations:
+      required: true
+
+  - type: input
+    id: config
+    attributes:
+      label: config.txt contents
+      description: Contents of %APPDATA%\tunnelstat\config.txt, if you changed it.
+      render: text
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Debug log
+      description: Run with TUNNELSTAT_DEBUG=1 and paste tunnelstat.log.
+      render: text

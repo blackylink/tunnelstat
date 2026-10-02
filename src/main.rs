@@ -257,19 +257,28 @@ struct App {
 }
 
 /// Строка для тултипа трея: имя туннеля + скорость + состояние.
+///
+/// ВАЖНО: NOTIFYICONDATA.szTip не поддерживает переносы строк на Windows 10/11,
+/// переводы строк там отображаются мусором. Поэтому всё в одну строку.
 fn tooltip(app: &App) -> String {
     let name = app
         .tunnel
         .and_then(|i| app.prev.get(&i))
         .map(|s| s.name.clone())
         .unwrap_or_else(|| "no VPN".into());
-    format!(
-        "tunnelstat - {}\n{}  |  {}\n{}",
+    let s = format!(
+        "tunnelstat | {} | down {} | up {} | {}",
         name,
         fmt_speed(app.down),
         fmt_speed(app.up),
         app.state().label()
-    )
+    );
+    // Некоторые треи режут по длине, поэтому следим за лимитом 127 символов.
+    if s.chars().count() > 127 {
+        s.chars().take(127).collect()
+    } else {
+        s
+    }
 }
 
 /// Коэффициент вариации: чем больше, тем рванее скорость.
@@ -418,7 +427,9 @@ impl App {
 
         // Сколько секунд подряд через туннель не идёт ни байта.
         if d + u < 1024.0 {
-            self.zero_ticks += 1;
+            // Cap it: at 1 Hz an u32 would wrap after ~49 days of a connected but
+            // idle tunnel, and the wrap would read as "traffic flowing again".
+            self.zero_ticks = self.zero_ticks.saturating_add(1).min(100_000);
         } else {
             self.zero_ticks = 0;
         }
@@ -521,6 +532,11 @@ impl App {
             ));
         }
         self.draw();
+        // Тултип трея обновляем редко (раз в ~10 с): Shell_NotifyIcon не бесплатен,
+        // но пользователь должен видеть актуальную скорость без наведения на панель.
+        if self.tick % 10 == 0 {
+            unsafe { tray_tip(self.hwnd, &tooltip(self)) };
+        }
     }
 
     /// Пересоздать буфер и шрифты под новый масштаб (смена DPI/монитора).
@@ -1327,14 +1343,26 @@ fn main() {
                     i += 1;
                 }
                 "--help" | "-h" => {
-                    println!("tunnelstat");
+                    println!("tunnelstat - VPN tunnel speed and health overlay");
+                    println!();
+                    println!("Usage: tunnelstat.exe [options]");
+                    println!();
+                    println!("  --zone 1..6     screen cell of a 3x2 grid, numbered bottom-up");
+                    println!("                  per column (5 = bottom of the right column)");
+                    println!("  --interval MS   poll interval, min 200 (default 1000);");
+                    println!("                  lower = more responsive, more CPU");
+                    println!("  --reset         forget the saved panel position");
+                    println!("  --state 0..4    pin one state: 0 stable, 1 unstable, 2 dropped,");
+                    println!("                  3 leak, 4 VPN down (for screenshots)");
+                    println!("  --demo          cycle all states (for screenshots)");
+                    println!("  -h, --help      this text");
+                    println!();
                     println!(
-                        "  --zone 1..6      screen cell (3x2 grid, numbered bottom-up per column)"
+                        "Config: %APPDATA%\\tunnelstat\\config.txt  (zone, interval, interface)"
                     );
-                    println!("  --interval MS    poll interval, min 200 (default 1000)");
-                    println!("  --reset          forget saved position");
-                    println!("  --demo           cycle all states (for screenshots)");
-                    println!("  TUNNELSTAT_DEBUG=1  write tunnelstat.log next to the exe");
+                    println!("Tray:   click toggles the panel, right-click opens the menu");
+                    println!("Keys:   Ctrl+Alt+V toggle, Ctrl+Alt+Q quit");
+                    println!("        TUNNELSTAT_DEBUG=1 writes tunnelstat.log next to the exe");
                     return;
                 }
                 _ => i += 1,
@@ -1361,7 +1389,13 @@ fn main() {
             dpi, s, wa.0, wa.1, wa.2, wa.3
         ));
 
-        let hinst = HINSTANCE(GetModuleHandleW(None).unwrap().0);
+        // panic="abort" в release: unwrap здесь означал бы смерть процесса.
+        // GetModuleHandleW(NULL) для запущенного exe не падает, но и полагаться
+        // на это не стоит — при неудаче просто тихо выходим.
+        let hinst = match GetModuleHandleW(None) {
+            Ok(h) => HINSTANCE(h.0),
+            Err(_) => return,
+        };
         let cname = wide("tunnelstat_overlay");
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,

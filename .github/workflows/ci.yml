@@ -6,14 +6,24 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Новый коммит отменяет предыдущий прогон для того же ref - экономит минуты.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
+
+# Принцип наименьших прав: CI не пишет в репозиторий и не трогает секреты.
+permissions:
+  contents: read
 
 jobs:
   build:
     name: Build and smoke-test (Windows x64)
     runs-on: windows-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -34,16 +44,19 @@ jobs:
         run: cargo build --release
 
       # A clean runner is a genuinely different machine from the author's laptop:
-      # no VPN adapter, different DPI, fresh Windows install. That is exactly the
-      # "does it launch somewhere else" check this project needs.
+      # no VPN adapter, different DPI, fresh Windows install, no admin. That is
+      # exactly the "does it launch anywhere else" check this project needs.
       - name: Smoke-test (no VPN present, no admin)
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           $exe = "target\release\tunnelstat.exe"
           if (-not (Test-Path $exe)) { throw "binary not produced" }
+
           $len = (Get-Item $exe).Length
           "binary: $len bytes"
-          if ($len -gt 900000) { throw "binary unexpectedly large: $len" }
+          if ($len -lt 50000)   { throw "binary suspiciously small: $len" }
+          if ($len -gt 900000)  { throw "binary unexpectedly large: $len" }
 
           $p = Start-Process $exe -PassThru
           Start-Sleep -Seconds 8
@@ -57,6 +70,12 @@ jobs:
             throw "private memory too high: $($live.PrivateMemorySize64)"
           }
 
+          # Every CLI flag must be accepted rather than ignored.
+          foreach ($a in @("--help","--zone","1","--interval","400","--reset")) {
+            & $exe @a | Out-Null
+          }
+          "flags OK"
+
           # Second instance must refuse to start (single-instance mutex).
           $p2 = Start-Process $exe -PassThru
           Start-Sleep -Seconds 4
@@ -66,15 +85,32 @@ jobs:
           Get-Process tunnelstat -ErrorAction SilentlyContinue | Stop-Process -Force
           "smoke test OK"
 
+      # Detects GDI handle leaks: the panel must not grow its handle count.
+      - name: Handle-leak check (60s)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $p = Start-Process "target\release\tunnelstat.exe" -PassThru
+          Start-Sleep -Seconds 6
+          $a = (Get-Process -Id $p.Id).HandleCount
+          Start-Sleep -Seconds 55
+          $b = (Get-Process -Id $p.Id).HandleCount
+          "handles: $a -> $b"
+          if ($b -gt $a + 12) { throw "handle leak: $a -> $b" }
+          Get-Process tunnelstat -ErrorAction SilentlyContinue | Stop-Process -Force
+          "no handle leak"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: tunnelstat-windows-x64
           path: target/release/tunnelstat.exe
+          if-no-files-found: error
 
   cross-check:
     name: clippy + fmt
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Install mingw
@@ -86,4 +122,4 @@ jobs:
           toolchain: stable-x86_64-pc-windows-gnu
           components: clippy, rustfmt
       - run: cargo fmt --check
-      - run: cargo clippy --release
+      - run: cargo clippy --release -- -D warnings

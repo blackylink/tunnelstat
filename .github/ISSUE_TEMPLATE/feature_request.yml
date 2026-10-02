@@ -1,0 +1,33 @@
+name: Feature request
+description: Suggest an improvement
+labels: enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the situation, not the solution. It helps to know what you were
+        trying to do when the current behaviour got in the way.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+    validations:
+      required: true
+
+  - type: dropdown
+    id: constraints
+    attributes:
+      label: Does this keep the core guarantees?
+      description: |
+        "Core guarantees" are: no network traffic, no driver, no admin rights, no reading
+        of VPN client config, and staying small.
+      options:
+        - "Yes, all of them"
+        - "Yes, but it needs a driver or admin"
+        - "Not sure"
+    validations:
+      required: true
