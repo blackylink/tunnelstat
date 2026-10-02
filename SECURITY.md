@@ -2,7 +2,7 @@
 
 ## What this tool reads
 
-`vpnstat` opens no files, reads no configuration, and inspects no packet contents.
+`tunnelstat` opens no files, reads no configuration, and inspects no packet contents.
 
 It calls exactly three Windows APIs:
 
@@ -25,8 +25,8 @@ It calls exactly three Windows APIs:
 ## Memory
 
 The tool holds no secrets: no keys, no tokens, no hostnames beyond adapter names shown
-in the `--debug` log. Adapter names are printed only to `vpnstat.log` next to the binary,
-and only when `VPNSTAT_DEBUG=1` is set. Delete that file to remove it.
+in the `--debug` log. Adapter names are printed only to `tunnelstat.log` next to the binary,
+and only when `TUNNELSTAT_DEBUG=1` is set. Delete that file to remove it.
 
 ## Reporting
 

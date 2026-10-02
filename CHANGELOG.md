@@ -16,13 +16,13 @@ First public release.
 - Leak detection based on routing evidence (no heuristics on throughput ratio, which
   produced false positives on healthy VPNs).
 - Stability from kernel packet-loss counters (`discards`/`errors`).
-- Drag to reposition; position persists in `%APPDATA%\vpnstat\pos.txt`.
+- Drag to reposition; position persists in `%APPDATA%\tunnelstat\pos.txt`.
 - Close button that appears on hover; click-through is lifted only while hovered.
 - Hotkeys: `Ctrl+Alt+V` toggle, `Ctrl+Alt+Q` quit.
 - Per-monitor DPI awareness v2, so the panel stays sharp on scaled displays.
 - Generated multi-resolution icon embedded into the binary; authored app manifest.
 - Single-instance guard via named mutex.
-- `--zone`, `--interval` flags and `VPNSTAT_DEBUG=1` diagnostics.
+- `--zone`, `--interval` flags and `TUNNELSTAT_DEBUG=1` diagnostics.
 
 ### Notes
 - Zero network traffic. No driver, no admin rights, no VPN client config is read.

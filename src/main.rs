@@ -1,4 +1,4 @@
-// vpnstat — лёгкий оверлей: скорость туннеля, стабильность, индикатор утечки.
+// tunnelstat — лёгкий оверлей: скорость туннеля, стабильность, индикатор утечки.
 //
 // Данные берутся ТОЛЬКО из счётчиков ядра (GetIfTable2 / GetIpForwardTable).
 // Сетевого трафика программа не создаёт вообще: ни пингов, ни проб, ни запросов.
@@ -17,6 +17,10 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::NetworkManagement::IpHelper::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::CreateMutexW;
+use windows::Win32::UI::Shell::{
+    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+    NOTIFYICONDATAW,
+};
 use windows::Win32::UI::HiDpi::{
     GetDpiForSystem, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
@@ -171,6 +175,21 @@ fn is_physical(s: &Snap) -> bool {
     s.if_type == 6 || s.if_type == 71 // Ethernet / IEEE80211
 }
 
+/// Loopback (IF_TYPE_SOFTWARE_LOOPBACK) туннелем быть не может.
+fn is_loopback(s: &Snap) -> bool {
+    s.if_type == 24
+}
+
+/// Совпадение имени адаптера с тем, что задал пользователь в конфиге.
+fn name_matches(s: &Snap, want: &str) -> bool {
+    let w = want.trim().to_lowercase();
+    if w.is_empty() {
+        return false;
+    }
+    let hay = format!("{} {}", s.name, s.desc).to_lowercase();
+    hay == w || hay.contains(&w)
+}
+
 // ── состояние приложения ─────────────────────────────────────────────────────
 
 /// Скорость на интерфейсе, байт/сек: (вниз, вверх)
@@ -190,6 +209,8 @@ struct App {
     prev: HashMap<u32, Snap>,
     rates: HashMap<u32, Rate>,
     tunnel: Option<u32>,
+    /// Адаптер, заданный пользователем вручную (None = автоопределение).
+    pinned: Option<String>,
     samples: Vec<f64>,
     loss_score: u32,
     zero_ticks: u32,
@@ -205,8 +226,32 @@ struct App {
     tick: u64,
     /// курсор над плашкой: показываем крестик и снимаем click-through
     hover: bool,
+    zone: u32,
+    interval: u32,
+    cfg: Config,
+    /// Принудительный показ состояний для скриншотов/README (--demo).
+    demo: bool,
+    /// Конкретное состояние 0..5 для детерминированных скриншотов.
+    forced: Option<State>,
 }
 
+/// Строка для тултипа трея: имя туннеля + скорость + состояние.
+fn tooltip(app: &App) -> String {
+    let name = app
+        .tunnel
+        .and_then(|i| app.prev.get(&i))
+        .map(|s| s.name.clone())
+        .unwrap_or_else(|| "no VPN".into());
+    format!(
+        "tunnelstat - {}\n{}  |  {}\n{}",
+        name,
+        fmt_speed(app.down),
+        fmt_speed(app.up),
+        app.state().label()
+    )
+}
+
+/// Коэффициент вариации: чем больше, тем рванее скорость.
 fn cv(samples: &[f64]) -> f64 {
     if samples.len() < 3 {
         return 0.0;
@@ -229,29 +274,75 @@ impl App {
             return;
         }
 
+        // После сна/гибернации счётчики прыгают: интервал огромный, и дельта
+        // даст гигантский "всплеск скорости". Сбрасываем базу.
+        if dt > 5.0 {
+            self.prev.clear();
+            self.rates.clear();
+            self.samples.clear();
+            self.loss_score = 0;
+            self.zero_ticks = 0;
+            self.down = 0.0;
+            self.up = 0.0;
+            self.phys_total = 0.0;
+            self.tunnel = None;
+        }
+
         let cur = unsafe { read_interfaces() };
         if cur.is_empty() {
             return;
         }
 
-        // Туннель: держим выбор, пока адаптер жив. Неподнятые адаптеры
-        // пропускаем — иначе выберется мёртвый туннель от выключенного клиента.
+        // ── Выбор туннеля ──
+        // Принцип для «любого пользователя»: туннель — это адаптер, который
+        // держит маршрут по умолчанию и при этом НЕ физический. Так находятся
+        // все TUN-клиенты (sing-box, xray, clash, wireguard, amnezia, outline,
+        // v2rayN, ...) без списка имён. Список имён — запасной путь для
+        // split-tunnel и клиентов, не ставящих маршрут по умолчанию.
         let def = unsafe { default_route_ifindex(self.tunnel) };
+
         if let Some(i) = self.tunnel {
+            // Адаптер мог исчезнуть (переподключение VPN) или упасть.
             if !cur.iter().any(|s| s.idx == i && s.link_up) {
                 self.tunnel = None;
                 self.samples.clear();
                 self.loss_score = 0;
+                self.zero_ticks = 0;
             }
         }
+
         if self.tunnel.is_none() {
-            let cands: Vec<&Snap> =
-                cur.iter().filter(|s| s.link_up && is_tunnel_by_name(s)).collect();
-            self.tunnel = cands
-                .iter()
-                .find(|s| Some(s.idx) == def)
-                .or_else(|| cands.iter().max_by_key(|s| s.in_oct + s.out_oct))
-                .map(|s| s.idx);
+            // Явно заданный пользователем адаптер — главнее всего.
+            let pinned = self
+                .pinned
+                .as_deref()
+                .and_then(|n| cur.iter().find(|s| s.link_up && name_matches(s, n)).map(|s| s.idx));
+
+            self.tunnel = pinned
+                .or_else(|| {
+                    // 1) Держит маршрут по умолчанию и не физический => почти наверняка VPN
+                    def.and_then(|d| {
+                        cur.iter()
+                            .find(|s| s.idx == d && s.link_up && !is_physical(s))
+                            .map(|s| s.idx)
+                    })
+                })
+                .or_else(|| {
+                    // 2) Известное имя адаптера
+                    let c: Vec<&Snap> =
+                        cur.iter().filter(|s| s.link_up && is_tunnel_by_name(s)).collect();
+                    c.iter()
+                        .find(|s| Some(s.idx) == def)
+                        .or_else(|| c.iter().max_by_key(|s| s.in_oct + s.out_oct))
+                        .map(|s| s.idx)
+                })
+                .or_else(|| {
+                    // 3) Нефизический адаптер с наибольшим трафиком
+                    cur.iter()
+                        .filter(|s| s.link_up && !is_physical(s) && !is_loopback(s))
+                        .max_by_key(|s| s.in_oct + s.out_oct)
+                        .map(|s| s.idx)
+                });
         }
 
         // Дельты счётчиков → скорости по всем адаптерам.
@@ -318,6 +409,22 @@ impl App {
     }
 
     fn state(&self) -> State {
+        // --state N: одно конкретное состояние, для детерминированных скриншотов
+        if let Some(s) = self.forced {
+            return s;
+        }
+        // --demo: показываем состояния по кругу для самопроверки
+        if self.demo {
+            const CYCLE: [State; 5] = [
+                State::Ok,
+                State::Warn,
+                State::Degraded,
+                State::Leak,
+                State::NoTunnel,
+            ];
+            let idx = ((self.tick / 6) as usize) % CYCLE.len();
+            return CYCLE[idx];
+        }
         let tun = match self.tunnel {
             None => return State::NoTunnel,
             Some(i) => i,
@@ -386,6 +493,25 @@ impl App {
             ));
         }
         self.draw();
+    }
+
+    /// Пересоздать буфер и шрифты под новый масштаб (смена DPI/монитора).
+    fn rebuild_gfx(&mut self) {
+        unsafe {
+            let g = make_gfx(self.size.0, self.size.1, self.scale);
+            // Старое освобождаем, иначе утечка GDI при каждой смене монитора.
+            let old_dc = self.gfx.dc;
+            let old_dib = self.gfx._dib;
+            let old_obj = self.gfx._old;
+            DeleteDC(old_dc);
+            DeleteObject(HGDIOBJ(old_dib.0));
+            if !old_obj.0.is_null() {
+                DeleteObject(old_obj);
+            }
+            DeleteObject(HGDIOBJ(self.gfx.f_bold.0));
+            DeleteObject(HGDIOBJ(self.gfx.f_small.0));
+            self.gfx = g;
+        }
     }
 
     fn draw(&mut self) {
@@ -564,15 +690,15 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// Диагностика в vpnstat.log рядом с exe. Только при запуске с --debug.
+/// Диагностика в tunnelstat.log рядом с exe. Только при запуске с --debug.
 fn diag(msg: &str) {
-    if std::env::var("VPNSTAT_DEBUG").is_err() {
+    if std::env::var("TUNNELSTAT_DEBUG").is_err() {
         return;
     }
     use std::io::Write;
     let path = std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join("vpnstat.log")));
+        .and_then(|p| p.parent().map(|d| d.join("tunnelstat.log")));
     if let Some(path) = path {
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
             let _ = writeln!(f, "{}", msg);
@@ -635,7 +761,7 @@ fn close_hit(screen: POINT, w: i32, h: i32, s: f32) -> RECT {
 
 fn cfg_file(name: &str) -> Option<std::path::PathBuf> {
     let base = std::env::var("APPDATA").ok()?;
-    Some(std::path::Path::new(&base).join("vpnstat").join(name))
+    Some(std::path::Path::new(&base).join("tunnelstat").join(name))
 }
 
 fn load_pos() -> Option<(i32, i32)> {
@@ -651,6 +777,64 @@ fn save_pos(pos: (i32, i32)) {
             let _ = std::fs::create_dir_all(dir);
         }
         let _ = std::fs::write(p, format!("{} {}", pos.0, pos.1));
+    }
+}
+
+/// Настройки из `%APPDATA%\tunnelstat\config.txt`. Необязательный файл:
+/// без него всё работает на автоопределении.
+#[derive(Default)]
+struct Config {
+    zone: Option<u32>,
+    interval: Option<u32>,
+    /// Имя адаптера, если автоопределение не подошло.
+    interface: Option<String>,
+}
+
+fn load_config() -> Config {
+    let mut c = Config::default();
+    let p = match cfg_file("config.txt") {
+        Some(p) => p,
+        None => return c,
+    };
+    let text = match std::fs::read_to_string(p) {
+        Ok(t) => t,
+        Err(_) => return c,
+    };
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        let mut kv = line.splitn(2, '=');
+        let k = kv.next().unwrap_or("").trim().to_lowercase();
+        let v = kv.next().unwrap_or("").trim().to_string();
+        match k.as_str() {
+            "zone" => c.zone = v.parse().ok(),
+            "interval" => c.interval = v.parse().ok(),
+            "interface" => {
+                if !v.is_empty() {
+                    c.interface = Some(v)
+                }
+            }
+            _ => {}
+        }
+    }
+    c
+}
+
+fn save_config(c: &Config, zone: u32, interval: u32) {
+    if let Some(p) = cfg_file("config.txt") {
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let mut t = String::from("# tunnelstat settings\n");
+        t.push_str(&format!("zone={}\n", zone));
+        t.push_str(&format!("interval={}\n", interval));
+        t.push_str(&format!(
+            "interface={}\n",
+            c.interface.as_deref().unwrap_or("")
+        ));
+        let _ = std::fs::write(p, t);
     }
 }
 
@@ -732,6 +916,121 @@ fn update_hover(app: &mut App) {
     app.render();
 }
 
+// ── трей ─────────────────────────────────────────────────────────────────────
+// Без трея выход неочевиден: горячие клавиши могут быть заняты другим ПО.
+
+const ID_TRAY: u32 = 0x564E5354; // "VNST"
+const WM_TRAY: u32 = WM_APP + 1;
+
+unsafe fn tray_add(hwnd: HWND) -> bool {
+    let hinst = HINSTANCE(hwnd.0 as *mut std::ffi::c_void);
+    let icon = LoadIconW(hinst, PCWSTR(1usize as *const u16)).unwrap_or_default();
+    let mut d = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: ID_TRAY,
+        uFlags: NIF_ICON | NIF_MESSAGE | NIF_TIP,
+        uCallbackMessage: WM_TRAY,
+        hIcon: icon,
+        ..Default::default()
+    };
+    let tip = wide("tunnelstat");
+    let n = tip.len().min(d.szTip.len() - 1);
+    d.szTip[..n].copy_from_slice(&tip[..n]);
+    Shell_NotifyIconW(NIM_ADD, &d).as_bool()
+}
+
+unsafe fn tray_tip(hwnd: HWND, text: &str) {
+    let mut d = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: ID_TRAY,
+        uFlags: NIF_TIP,
+        ..Default::default()
+    };
+    let t = wide(text);
+    let n = t.len().min(d.szTip.len() - 1);
+    d.szTip[..n].copy_from_slice(&t[..n]);
+    Shell_NotifyIconW(NIM_MODIFY, &d);
+}
+
+unsafe fn tray_del(hwnd: HWND) {
+    let d = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: ID_TRAY,
+        ..Default::default()
+    };
+    Shell_NotifyIconW(NIM_DELETE, &d);
+}
+
+/// Меню трея: показать/скрыть, зоны, выход.
+unsafe fn tray_menu(hwnd: HWND) {
+    let h = match CreatePopupMenu() {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+    let mut sid = 10usize;
+    let mut zone_items: Vec<(u32, usize)> = Vec::new(); // (zone, id)
+
+    let b_hide = wide("Hide overlay");
+    let b_quit = wide("Quit");
+    let _ = AppendMenuW(h, MF_STRING, sid, PCWSTR(b_hide.as_ptr()));
+    let id_hide = sid;
+    sid += 1;
+
+    let _ = AppendMenuW(h, MF_SEPARATOR, 0, PCWSTR::null());
+
+    for z in 1..=6u32 {
+        let buf = wide(&format!("Zone {}  (col {}, row {})", z, (z - 1) / 2, (z - 1) % 2));
+        let _ = AppendMenuW(h, MF_STRING, sid, PCWSTR(buf.as_ptr()));
+        zone_items.push((z, sid));
+        sid += 1;
+    }
+
+    let _ = AppendMenuW(h, MF_SEPARATOR, 0, PCWSTR::null());
+    let _ = AppendMenuW(h, MF_STRING, sid, PCWSTR(b_quit.as_ptr()));
+    let id_quit = sid;
+
+    // Чтобы меню закрывалось по клику мышью, окно должно быть foreground.
+    let mut p = POINT::default();
+    let _ = GetCursorPos(&mut p);
+    SetForegroundWindow(hwnd);
+    // С TPM_RETURNCMD выбранный id возвращается прямо в результате, без WM_COMMAND.
+    let cmd = TrackPopupMenu(
+        h,
+        TPM_RIGHTBUTTON | TPM_RETURNCMD,
+        p.x,
+        p.y,
+        0,
+        hwnd,
+        None,
+    )
+    .0 as usize;
+    let _ = DestroyMenu(h);
+
+    if cmd == id_hide {
+        ShowWindow(hwnd, SW_HIDE);
+    } else if cmd == id_quit {
+        DestroyWindow(hwnd);
+    } else if cmd != 0 {
+        let app = &mut *APP;
+        for (z, id) in zone_items {
+            if cmd == id {
+                app.pos = compute_pos(z, app.size);
+                app.zone = z;
+                SetWindowPos(hwnd, HWND_TOPMOST, app.pos.0, app.pos.1, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+                save_pos(app.pos);
+                save_config(&app.cfg, app.zone, app.interval);
+                app.render();
+                break;
+            }
+        }
+    }
+    // После закрытия меню окно теряет foreground — возвращаем фокус.
+    PostMessageW(hwnd, WM_NULL, WPARAM(0), LPARAM(0));
+}
+
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     let app = &mut *APP;
     match msg {
@@ -777,6 +1076,51 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             }
             LRESULT(0)
         }
+        WM_DISPLAYCHANGE | WM_DPICHANGED => {
+            // Сменилось разрешение, монитор или масштаб: пересчитываем геометрию.
+            // Иначе на ноутбуке после подключения внешнего монитора плашка уезжает.
+            let dpi = if GetDpiForSystem() > 0 { GetDpiForSystem() } else { 96 };
+            let ns = dpi as f32 / 96.0;
+            let new_size = ((280.0 * ns) as i32, (66.0 * ns) as i32);
+            if new_size != app.size {
+                app.size = new_size;
+                app.scale = ns;
+                // шрифты и буфер зависят от масштаба — пересоздаём
+                app.rebuild_gfx();
+                SetWindowPos(
+                    hwnd,
+                    HWND_TOPMOST,
+                    app.pos.0,
+                    app.pos.1,
+                    new_size.0,
+                    new_size.1,
+                    SWP_NOACTIVATE,
+                );
+            }
+            app.render();
+            LRESULT(0)
+        }
+        WM_SETTINGCHANGE => {
+            // Изменилась рабочая область (панель задач, разрешение)
+            let mut r = RECT::default();
+            GetWindowRect(hwnd, &mut r);
+            app.pos = (r.left, r.top);
+            LRESULT(0)
+        }
+        WM_TRAY => {
+            match lp.0 as u32 {
+                WM_LBUTTONDBLCLK => {
+                    let vis = IsWindowVisible(hwnd).as_bool();
+                    ShowWindow(hwnd, if vis { SW_HIDE } else { SW_SHOWNA });
+                    LRESULT(0)
+                }
+                WM_CONTEXTMENU => {
+                    tray_menu(hwnd);
+                    LRESULT(0)
+                }
+                _ => LRESULT(0),
+            }
+        }
         WM_HOTKEY => match wp.0 as u32 {
             1 => {
                 // Ctrl+Alt+V — показать/скрыть
@@ -796,7 +1140,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             LRESULT(0)
         }
         WM_DESTROY => {
+            tray_del(hwnd);
             save_pos(app.pos);
+            save_config(&app.cfg, app.zone, app.interval);
             PostQuitMessage(0);
             LRESULT(0)
         }
@@ -807,43 +1153,83 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
 fn main() {
     unsafe {
         let args: Vec<String> = std::env::args().collect();
-        let mut zone = 5u32; // по умолчанию правая нижняя ячейка (5-я снизу)
-        let mut interval = 1000u32;
+        // Приоритет: CLI > config.txt > значения по умолчанию
+        let cfg = load_config();
+        let mut zone = cfg.zone.unwrap_or(5);
+        let mut interval = cfg.interval.unwrap_or(1000).max(200);
+        let mut demo = false;
+        let mut forced: Option<State> = None;
         let mut i = 1;
         while i < args.len() {
             match args[i].as_str() {
+                "--demo" => {
+                    demo = true;
+                    i += 1;
+                }
+                "--state" if i + 1 < args.len() => {
+                    const ALL: [State; 5] = [
+                        State::Ok,
+                        State::Warn,
+                        State::Degraded,
+                        State::Leak,
+                        State::NoTunnel,
+                    ];
+                    let n: usize = args[i + 1].parse().unwrap_or(0);
+                    if n < ALL.len() {
+                        forced = Some(ALL[n]);
+                    }
+                    i += 2;
+                }
                 "--zone" if i + 1 < args.len() => {
-                    zone = args[i + 1].parse().unwrap_or(5);
+                    zone = args[i + 1].parse().unwrap_or(5).clamp(1, 6);
                     i += 2;
                 }
                 "--interval" if i + 1 < args.len() => {
                     interval = args[i + 1].parse().unwrap_or(1000).max(200);
                     i += 2;
                 }
+                "--reset" => {
+                    // сбросить сохранённое положение
+                    if let Some(p) = cfg_file("pos.txt") {
+                        let _ = std::fs::remove_file(p);
+                    }
+                    i += 1;
+                }
+                "--help" | "-h" => {
+                    println!("tunnelstat");
+                    println!("  --zone 1..6      screen cell (3x2 grid, numbered bottom-up per column)");
+                    println!("  --interval MS    poll interval, min 200 (default 1000)");
+                    println!("  --reset          forget saved position");
+                    println!("  --demo           cycle all states (for screenshots)");
+                    println!("  TUNNELSTAT_DEBUG=1  write tunnelstat.log next to the exe");
+                    return;
+                }
                 _ => i += 1,
             }
         }
 
-        let mname = wide("Local\\vpnstat_overlay_single");
+        let mname = wide("Local\\tunnelstat_single");
         let _mutex = CreateMutexW(None, true, PCWSTR(mname.as_ptr()));
         if GetLastError() == ERROR_ALREADY_EXISTS {
             return;
         }
 
         let screen = GetDC(None);
-        let aware_ok = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2).is_ok();
-        let err = GetLastError().0;
+        // Манифест объявляет DPI-awareness до старта процесса, поэтому API-вызов
+        // вернёт ACCESS_DENIED — это НЕ ошибка, а признак того, что манифест
+        // сработал. Ориентируемся на реальный dpi, а не на результат вызова.
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let dpi = GetDpiForSystem();
         ReleaseDC(None, screen);
         let s = if dpi > 0 { dpi as f32 / 96.0 } else { 1.0 };
         let wa = work_area();
         diag(&format!(
-            "aware_ok={} err={} dpi={} scale={:.2} wa=({},{})-({},{})",
-            aware_ok, err, dpi, s, wa.0, wa.1, wa.2, wa.3
+            "dpi={} scale={:.2} wa=({},{})-({},{})",
+            dpi, s, wa.0, wa.1, wa.2, wa.3
         ));
 
         let hinst = HINSTANCE(GetModuleHandleW(None).unwrap().0);
-        let cname = wide("vpnstat_overlay");
+        let cname = wide("tunnelstat_overlay");
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
             style: WNDCLASS_STYLES(0x0002 | 0x0001),
@@ -873,15 +1259,26 @@ fn main() {
         )
         .unwrap_or_default();
 
+        // Горячие клавиши могут быть заняты другим ПО — это не повод молча
+        // ломаться. В трее всегда есть доступ к выходу.
         let mods = MOD_ALT | MOD_CONTROL | MOD_NOREPEAT;
-        RegisterHotKey(hwnd, 1, mods, 0x56); // V
-        RegisterHotKey(hwnd, 2, mods, 0x51); // Q
+        let hk_v = RegisterHotKey(hwnd, 1, mods, 0x56);
+        let hk_q = RegisterHotKey(hwnd, 2, mods, 0x51);
+        if hk_v.is_err() || hk_q.is_err() {
+            diag("hotkey registration failed; tray menu remains the way out");
+        }
+
+        tray_add(hwnd);
+        // Пишем конфиг сразу: файл должен существовать, чтобы пользователь мог
+        // его найти и отредактировать, даже если позже закроет процесс kill'ом.
+        save_config(&cfg, zone, interval);
 
         let gfx = make_gfx(size.0, size.1, s);
         let app = Box::new(App {
             prev: HashMap::new(),
             rates: HashMap::new(),
             tunnel: None,
+            pinned: cfg.interface.clone(),
             samples: Vec::new(),
             loss_score: 0,
             zero_ticks: 0,
@@ -896,6 +1293,11 @@ fn main() {
             scale: s,
             tick: 0,
             hover: false,
+            zone,
+            interval,
+            cfg,
+            demo,
+            forced,
         });
         APP = Box::into_raw(app);
 
@@ -903,6 +1305,8 @@ fn main() {
         (*APP).poll();
         std::thread::sleep(std::time::Duration::from_millis(1100));
         (*APP).poll();
+        // тултип трея сразу показывает состояние
+        tray_tip(hwnd, &tooltip(&(*APP)));
 
         SetTimer(hwnd, 1, interval, None);
         // таймер наведения: 60 мс, чтобы крестик появлялся мгновенно

@@ -1,150 +1,179 @@
-# vpnstat-overlay
+<div align="center">
 
-**A 340 KB, zero-network-traffic Windows overlay that shows live VPN tunnel speed and connection health.**
+<img src="docs/icon.png" width="96" alt="tunnelstat logo">
 
-No driver. No admin rights. No config files. Does not read or modify your VPN client.
-Reads kernel counters only — **0 bytes** of network traffic.
+# tunnelstat
 
-[![CI](https://github.com/OWNER/vpnstat-overlay/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/vpnstat-overlay/actions/workflows/ci.yml)
-[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![rust](https://img.shields.io/badge/rust-1.99%2B-orange.svg)](https://www.rust-lang.org)
-[![size](https://img.shields.io/badge/binary-343_KB-brightgreen.svg)](https://github.com/OWNER/vpnstat-overlay/releases)
-[![platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-blue.svg)](https://github.com/OWNER/vpnstat-overlay/releases)
+**A 343 KB Windows overlay that shows live VPN tunnel speed and connection health.**
 
-![screenshot](docs/screenshot.png)
+No driver · No admin rights · **Zero network traffic** · 1.7 MB private RAM · 0.43 % CPU
+
+[Download](https://github.com/OWNER/tunnelstat/releases) · [Report an issue](https://github.com/OWNER/tunnelstat/issues) · [License](LICENSE)
+
+</div>
 
 ---
 
 ## What it does
 
-A small always-on-top panel, click-through, that sits on top of everything and shows:
+A small always-on-top panel that sits over your windows and shows:
 
-```
-●  ↓ 42.6 MB/s   ↑ 3.1 MB/s
-   stable
-```
+<div align="center">
+<img src="docs/state-stable.png" width="420" alt="stable state">
+</div>
 
-| Colour | Meaning | Triggered by |
+| State | Colour | Meaning |
 |---|---|---|
-| 🟢 Green | `stable` | No packet loss, tunnel link up |
-| 🟡 Yellow | `unstable` | Loss was observed, or very spiky throughput (CV ≥ 2.0) |
-| 🟠 Orange | `dropped` | 4+ consecutive seconds with loss, or the tunnel link fell |
-| 🔴 Red | `leak: traffic bypassing VPN` | Tunnel does **not** hold the default route, or it holds it but no byte passes for 5+ s while the physical NIC is busy |
-| ⚪ Grey | `VPN is down` | No tunnel adapter found |
+| `stable` | 🟢 green | no packet loss, tunnel link up |
+| `unstable` | 🟡 yellow | loss was seen, or very spiky throughput |
+| `dropped` | 🟠 orange | 4+ seconds of consecutive loss, or the tunnel link fell |
+| `leak: traffic bypassing VPN` | 🔴 red | the tunnel does **not** hold the default route, or it holds it but nothing passes while your NIC is busy |
+| `VPN is down` | ⚪ grey | no tunnel adapter found |
 
-## Why this exists
+<div align="center">
+<img src="docs/state-unstable.png" width="200"> <img src="docs/state-dropped.png" width="200"> <img src="docs/state-leak.png" width="200">
+</div>
 
-Every network-speed widget I tried either burned 50–100 MB of RAM (Python + Qt), needed a
-kernel driver, or sent probe traffic to measure "stability". This does none of those:
+## One of the lightest tools in this category
 
-| Tool | RAM | Network traffic | Admin |
-|---|---|---|---|
-| NetSpeedTray | ~50 MB | latency probe (opt-in) | no |
-| TrafficMonitor | ~10 MB | none | Lite: no |
-| **this** | **1.7 MB private** | **none** | **no** |
+This was the actual design constraint. Every alternative I measured either needed a
+kernel driver, burned 50–100 MB, or sent probe packets to the network:
 
-It answers one question cheaply: *is my tunnel actually carrying my traffic right now, or is
-something going around it?*
+| Tool | Private RAM | Network traffic | Admin | Driver |
+|---|---|---|---|---|
+| [NetSpeedTray](https://github.com/erez-c137/NetSpeedTray) | ~50 MB | latency probe, opt-in | no | no |
+| [TrafficMonitor](https://github.com/zhongyang219/TrafficMonitor) Lite | ~5–10 MB | none | no | no |
+| [NetSpeedTray](https://github.com/erez-c137/NetSpeedTray) + LHM helper | +50–60 MB | none | yes | via helper |
+| **tunnelstat** | **1.77 MB** | **none** | **no** | **no** |
 
-## How it works
+Measured on Windows 11, 2256×1504 @ 200 % scaling, tunnel active, over a 15-minute soak:
 
-Two Windows APIs, nothing else:
+| Metric | Value |
+|---|---|
+| Binary | 343 KB, single file, no runtime dependencies |
+| Private memory | **1.77 MB** (working set shows 7.4 MB — the difference is shared `gdi32`/`user32` pages) |
+| CPU | **0.43 %** of one core, averaged over 15 min |
+| Threads | 1 |
+| Handles | 89, **flat for the whole run** — no GDI leak |
+| Network traffic | **0 bytes** |
 
-- **`GetIfTable2`** — per-adapter byte/discard/error counters. Speed is the delta per sample.
-- **`GetIpForwardTable`** — which interface owns the default route. This is the actual
-  evidence for the red state.
+Reproduce it yourself:
 
-The tunnel is identified by adapter name/type match (`sing-box`, `clash`, `hiddify`, `wintun`,
-`wireguard`, `xray`, …) or `IF_TYPE_TUNNEL`, preferring whichever candidate holds the default
-route. Configs of the VPN client are never opened.
-
-Rendering is plain GDI into a 32-bpp top-down DIB, with an SDF-computed alpha mask for the
-rounded corners, blitted with `UpdateLayeredWindow`. No GDI+, no web view, no Qt.
+```powershell
+TUNNELSTAT_DEBUG=1 .\tunnelstat.exe
+```
 
 ## Install
 
-Grab `vpnstat.exe` from [Releases](https://github.com/OWNER/vpnstat-overlay/releases) and run
-it. That is the whole install — it is a single self-contained binary.
+Grab `tunnelstat.exe` from [Releases](https://github.com/OWNER/tunnelstat/releases). That is
+the entire install — copy it anywhere and run it. Single self-contained binary.
 
-Requires Windows 10 1903+ / Windows 11, x64. No installer, no dependencies.
+Requires **Windows 10 1903+ / Windows 11, x64**. No installer, no registry, no dependencies.
+
+## Usage
 
 ```
-vpnstat.exe                # default position: zone 5 (bottom-right cell centre)
-vpnstat.exe --zone 1..6    # pick a cell of the 3x2 screen grid
-vpnstat.exe --interval 500 # poll interval in ms (default 1000, min 200)
-VPNSTAT_DEBUG=1            # write vpnstat.log next to the exe
+tunnelstat.exe                # appears bottom-right of the screen grid
+tunnelstat.exe --zone 1..6    # pick a cell of the 3x2 screen grid
+tunnelstat.exe --interval 500 # poll interval in ms (default 1000, minimum 200)
+tunnelstat.exe --reset        # forget the saved position
+tunnelstat.exe --help         # usage
 ```
 
-Drag the panel anywhere; the position persists in `%APPDATA%\vpnstat\pos.txt`.
-Zones are numbered bottom-up per column, so **zone 5 is the bottom of the right column**.
+**Tray icon** (left of the clock):
+
+| Action | Result |
+|---|---|
+| Left-click / double-click | show / hide the panel |
+| Right-click | menu: hide, pick a zone (1–6), quit |
+| Hover the panel | a close button appears; the panel becomes draggable |
+
+**Hotkeys** (both may be taken by other software — the tray menu always works):
 
 | Key | Action |
 |---|---|
 | `Ctrl+Alt+V` | hide / show |
 | `Ctrl+Alt+Q` | quit |
 
-Click-through is disabled automatically while the cursor is over the panel, which is when the
-close button and drag appear.
+**Zones.** The screen is divided 3×2 and numbered bottom-up per column, so zone 5 is the
+bottom of the right column. Default is zone 5. Drag the panel anywhere; the position is
+remembered in `%APPDATA%\tunnelstat\pos.txt`.
 
-## Measured footprint
+**Config file** — optional, `%APPDATA%\tunnelstat\config.txt`:
 
-Windows 11, 2256×1504 @ 200% scaling, tunnel active:
+```ini
+zone=5
+interval=1000
+interface=          # pin a specific adapter by name if auto-detection misses
+```
 
-| Mode | Working set | Private | CPU (one core) | Handles |
-|---|---|---|---|---|
-| Idle, 60 s | 7.19 MB | 1.69 MB | 0.8 % | 89 |
-| Under load | 7.18 MB | 1.68 MB | 0.4 % | 104 |
-| After 2.5 min | 7.21 MB | 1.69 MB | — | 89 |
+Auto-detection does not rely on a list of VPN client names. The rule is: *the interface
+that holds the default route and is not a physical NIC is the tunnel.* That finds
+`sing-box`, `xray`, `clash`, `mihomo`, `wireguard`, `amnezia`, `outline`, `v2rayN`, and any
+other TUN-based client. Name matching is only a fallback for split-tunnel setups, and
+`IF_TYPE_TUNNEL` is accepted too. If yours is still missed, set `interface=`.
 
-The gap between working set and private is shared `gdi32`/`user32` pages, which the task
-manager counts against the process. Actual owned memory is the ~1.7 MB private figure.
-One thread. No leaks: handle count is flat over time, every GDI object is released.
+## How it works
 
-## Limitations — read this
+Two Windows APIs and nothing else:
 
-Stated plainly, because a health indicator that lies is worse than none:
+- **`GetIfTable2`** — per-adapter byte / discard / error counters. Speed is the delta.
+- **`GetIpForwardTable`** — which interface owns the default route. This is the actual
+  evidence behind the red state.
 
-1. **Latency and jitter are not measured.** Measuring them requires sending probes (ICMP or a
-   TCP connect). This tool sends zero bytes, so "stability" here means **packet loss**
-   (`discards`/`errors` on the tunnel adapter), which is the only trustworthy local signal.
+Rendering is plain GDI into a 32-bpp top-down DIB, with an SDF-computed alpha mask for the
+rounded corners, blitted with `UpdateLayeredWindow`. No GDI+, no web view, no Qt, no
+`unsafe` beyond the FFI surface.
 
-2. **It cannot tell you *which* application is leaking.** Windows does not attribute bytes per
-   process without a kernel driver. Red means *the routing evidence says traffic is not going
-   through the tunnel* — not *app X is leaking*.
+## Limitations — please read
 
-3. **DPI blocking of your server is not detected.** Locally you only see the symptom (handshake
-   fails). Telling "DPI is resetting me" apart from "the server is down" needs active probing.
+Stated plainly, because a health indicator that lies is worse than no indicator:
 
-4. **Throughput variance mostly reflects your traffic, not the link.** The yellow state is
-   therefore driven by loss counters, with CV used only as a secondary hint at a very high
-   threshold.
+1. **Latency and jitter are not measured.** Measuring them requires sending probes. This
+   tool sends zero bytes by design, so "stability" means **packet loss**
+   (`discards`/`errors` on the tunnel adapter) — the only trustworthy local signal.
 
-## Building
+2. **It cannot tell you which application is leaking.** Windows does not attribute bytes
+   per process without a kernel driver. Red means *the routing evidence says traffic is not
+   going through the tunnel*, not *app X is leaking*.
 
-Needs a Rust toolchain (GNU host) and mingw for `windres`:
+3. **DPI blocking of your server is not detected.** Locally you only see the symptom. Telling
+   "DPI is resetting me" from "the server is down" needs active probing.
+
+4. **Fullscreen games and video will cover it.** The overlay is a normal topmost window; only
+   exclusive fullscreen bypasses it, and working around that needs driver-level hooks.
+
+5. **Throughput variance mostly reflects your traffic, not the link.** That is why the yellow
+   state is driven by loss counters, with variance only as a secondary hint.
+
+## Development
 
 ```powershell
 $env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-gnu"
 $env:PATH = "$env:CARGO_HOME\bin;<mingw>\bin;$env:PATH"
 cargo build --release
+cargo test
 ```
 
-The icon is generated, not hand-drawn. Regenerate it with:
+The icon is generated, not hand-drawn — regenerate it with
+`powershell -ExecutionPolicy Bypass -File make_icon.ps1`. Screenshots are reproducible too:
+`tunnelstat.exe --state 0..4` pins one state each.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File make_icon.ps1
-```
+`build.rs` compiles `tunnelstat.rc` with `windres` and links the `.res`. It passes **relative**
+paths on purpose: windres shells out to `cc1`, which does not quote paths containing spaces.
 
-`build.rs` compiles `vpnstat.rc` with `windres` and links the resulting `.res`. It passes
-**relative** paths to windres on purpose: windres shells out to `cc1`, which does not quote
-paths containing spaces.
+CI builds and smoke-tests on GitHub's Windows runners — clean installs, no VPN adapter, no
+admin rights, different DPI. That is also how this project gets verified on a machine other
+than the author's.
 
-CI builds and smoke-tests on GitHub's Windows runners — that is also how this gets verified on
-a machine other than the author's.
+## Topics
+
+`vpn` `network-monitor` `traffic` `tunnel` `overlay` `sing-box` `xray` `clash` `wireguard`
+`leak-detection` `windows` `gdi` `tray` `hud` `system-monitor` `rust` `low-footprint`
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
 
-Not affiliated with or endorsed by any VPN provider. Does not circumvent censorship or detect
-DPI; it only observes adapter counters and routing state.
+Not affiliated with or endorsed by any VPN provider. Does not circumvent censorship and does
+not detect DPI; it only observes adapter counters and routing state.
