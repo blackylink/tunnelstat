@@ -39,7 +39,7 @@ jobs:
       - name: Smoke-test (no VPN present, no admin)
         shell: pwsh
         run: |
-          $exe = "target\release\vpnstat.exe"
+          $exe = "target\release\tunnelstat.exe"
           if (-not (Test-Path $exe)) { throw "binary not produced" }
           $len = (Get-Item $exe).Length
           "binary: $len bytes"
@@ -60,17 +60,17 @@ jobs:
           # Second instance must refuse to start (single-instance mutex).
           $p2 = Start-Process $exe -PassThru
           Start-Sleep -Seconds 4
-          $n = @(Get-Process vpnstat -ErrorAction SilentlyContinue).Count
+          $n = @(Get-Process tunnelstat -ErrorAction SilentlyContinue).Count
           if ($n -ne 1) { throw "single-instance guard failed: $n processes" }
 
-          Get-Process vpnstat -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-Process tunnelstat -ErrorAction SilentlyContinue | Stop-Process -Force
           "smoke test OK"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: vpnstat-windows-x64
-          path: target/release/vpnstat.exe
+          name: tunnelstat-windows-x64
+          path: target/release/tunnelstat.exe
 
   cross-check:
     name: clippy + fmt

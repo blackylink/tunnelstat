@@ -17,14 +17,16 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::NetworkManagement::IpHelper::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::CreateMutexW;
+use windows::Win32::UI::HiDpi::{
+    GetDpiForSystem, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    RegisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
+};
 use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
     NOTIFYICONDATAW,
 };
-use windows::Win32::UI::HiDpi::{
-    GetDpiForSystem, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
-};
-use windows::Win32::UI::Input::KeyboardAndMouse::{MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, RegisterHotKey};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 // ── состояния ────────────────────────────────────────────────────────────────
@@ -158,9 +160,28 @@ unsafe fn default_route_ifindex(prefer: Option<u32>) -> Option<u32> {
 }
 
 const TUNNEL_PATTERNS: &[&str] = &[
-    "sing-box", "singbox", "hiddify", "clash", "mihomo", "wintun", "wireguard", "amnezia",
-    "nekoray", "v2ray", "xray", "outline", "openvpn", "tun", "tap", "tailscale",
-    "zerotier", "warp", "utun", "torsocks", "shadowsocks", "meta tunnel",
+    "sing-box",
+    "singbox",
+    "hiddify",
+    "clash",
+    "mihomo",
+    "wintun",
+    "wireguard",
+    "amnezia",
+    "nekoray",
+    "v2ray",
+    "xray",
+    "outline",
+    "openvpn",
+    "tun",
+    "tap",
+    "tailscale",
+    "zerotier",
+    "warp",
+    "utun",
+    "torsocks",
+    "shadowsocks",
+    "meta tunnel",
 ];
 
 fn is_tunnel_by_name(s: &Snap) -> bool {
@@ -313,10 +334,11 @@ impl App {
 
         if self.tunnel.is_none() {
             // Явно заданный пользователем адаптер — главнее всего.
-            let pinned = self
-                .pinned
-                .as_deref()
-                .and_then(|n| cur.iter().find(|s| s.link_up && name_matches(s, n)).map(|s| s.idx));
+            let pinned = self.pinned.as_deref().and_then(|n| {
+                cur.iter()
+                    .find(|s| s.link_up && name_matches(s, n))
+                    .map(|s| s.idx)
+            });
 
             self.tunnel = pinned
                 .or_else(|| {
@@ -329,8 +351,10 @@ impl App {
                 })
                 .or_else(|| {
                     // 2) Известное имя адаптера
-                    let c: Vec<&Snap> =
-                        cur.iter().filter(|s| s.link_up && is_tunnel_by_name(s)).collect();
+                    let c: Vec<&Snap> = cur
+                        .iter()
+                        .filter(|s| s.link_up && is_tunnel_by_name(s))
+                        .collect();
                     c.iter()
                         .find(|s| Some(s.idx) == def)
                         .or_else(|| c.iter().max_by_key(|s| s.in_oct + s.out_oct))
@@ -375,7 +399,11 @@ impl App {
             self.loss_score.saturating_sub(1)
         };
 
-        let (d, u) = self.tunnel.and_then(|i| self.rates.get(&i)).copied().unwrap_or((0.0, 0.0));
+        let (d, u) = self
+            .tunnel
+            .and_then(|i| self.rates.get(&i))
+            .copied()
+            .unwrap_or((0.0, 0.0));
         self.down = d;
         self.up = u;
 
@@ -429,7 +457,7 @@ impl App {
             None => return State::NoTunnel,
             Some(i) => i,
         };
-        let up = self.prev.get(&tun).map_or(false, |s| s.link_up);
+        let up = self.prev.get(&tun).is_some_and(|s| s.link_up);
 
         if !up {
             // адаптер туннеля есть, но линк не поднят — соединение рухнуло
@@ -525,19 +553,37 @@ impl App {
             let dc = self.gfx.dc;
 
             // 1. фон на весь буфер
-            let mut rc = RECT { left: 0, top: 0, right: w, bottom: h };
+            let mut rc = RECT {
+                left: 0,
+                top: 0,
+                right: w,
+                bottom: h,
+            };
             let bbrush = CreateSolidBrush(COLORREF(bgra(bg)));
             FillRect(dc, &rc, bbrush);
             DeleteObject(HGDIOBJ(bbrush.0));
 
             // 2. рамка
             let inset = (0.5 * s) as i32;
-            rc = RECT { left: inset, top: inset, right: w - inset, bottom: h - inset };
+            rc = RECT {
+                left: inset,
+                top: inset,
+                right: w - inset,
+                bottom: h - inset,
+            };
             let pen = CreatePen(PS_SOLID, 1, COLORREF(bgra(0x3E4A60)));
             let old = SelectObject(dc, HGDIOBJ(pen.0));
             let hollow = GetStockObject(NULL_BRUSH);
             let oldb = SelectObject(dc, hollow);
-            RoundRect(dc, rc.left, rc.top, rc.right, rc.bottom, (26.0 * s) as i32, (26.0 * s) as i32);
+            RoundRect(
+                dc,
+                rc.left,
+                rc.top,
+                rc.right,
+                rc.bottom,
+                (26.0 * s) as i32,
+                (26.0 * s) as i32,
+            );
             SelectObject(dc, oldb);
             SelectObject(dc, old);
             DeleteObject(HGDIOBJ(pen.0));
@@ -576,16 +622,40 @@ impl App {
 
             SetTextColor(dc, COLORREF(bgra(0xE9ECF2)));
             let old = SelectObject(dc, HGDIOBJ(self.gfx.f_bold.0));
-            let mut l1 = wide(&format!("↓ {}   ↑ {}", fmt_speed(self.down), fmt_speed(self.up)));
-            let mut r1 = RECT { left: tx, top: (10.0 * s) as i32, right: tx + tw, bottom: (35.0 * s) as i32 };
-            DrawTextW(dc, &mut l1, &mut r1, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+            let mut l1 = wide(&format!(
+                "↓ {}   ↑ {}",
+                fmt_speed(self.down),
+                fmt_speed(self.up)
+            ));
+            let mut r1 = RECT {
+                left: tx,
+                top: (10.0 * s) as i32,
+                right: tx + tw,
+                bottom: (35.0 * s) as i32,
+            };
+            DrawTextW(
+                dc,
+                &mut l1,
+                &mut r1,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
+            );
             SelectObject(dc, old);
 
             SetTextColor(dc, COLORREF(bgra(col)));
             let old = SelectObject(dc, HGDIOBJ(self.gfx.f_small.0));
             let mut l2 = wide(st.label());
-            let mut r2 = RECT { left: tx, top: (36.0 * s) as i32, right: tx + tw, bottom: (58.0 * s) as i32 };
-            DrawTextW(dc, &mut l2, &mut r2, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+            let mut r2 = RECT {
+                left: tx,
+                top: (36.0 * s) as i32,
+                right: tx + tw,
+                bottom: (58.0 * s) as i32,
+            };
+            DrawTextW(
+                dc,
+                &mut l2,
+                &mut r2,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
+            );
             SelectObject(dc, old);
 
             // 4b. крестик — только когда курсор над плашкой
@@ -613,15 +683,27 @@ impl App {
             GetWindowRect(self.hwnd, &mut wr);
             self.pos = (wr.left, wr.top);
             let screen = GetDC(None);
-            let dst = POINT { x: wr.left, y: wr.top };
+            let dst = POINT {
+                x: wr.left,
+                y: wr.top,
+            };
             let size = SIZE { cx: w, cy: h };
             let src = POINT { x: 0, y: 0 };
-            let bf = BLENDFUNCTION { BlendOp: 0, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: 1 };
+            let bf = BLENDFUNCTION {
+                BlendOp: 0,
+                BlendFlags: 0,
+                SourceConstantAlpha: 255,
+                AlphaFormat: 1,
+            };
             UpdateLayeredWindow(
-                self.hwnd, screen,
-                Some(&dst), Some(&size),
-                dc, Some(&src),
-                COLORREF(0), Some(&bf),
+                self.hwnd,
+                screen,
+                Some(&dst),
+                Some(&size),
+                dc,
+                Some(&src),
+                COLORREF(0),
+                Some(&bf),
                 ULW_ALPHA,
             )
             .ok();
@@ -700,7 +782,11 @@ fn diag(msg: &str) {
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("tunnelstat.log")));
     if let Some(path) = path {
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
             let _ = writeln!(f, "{}", msg);
         }
     }
@@ -722,7 +808,8 @@ unsafe fn make_gfx(w: i32, h: i32, s: f32) -> Gfx {
     bmi.bmiHeader.biCompression = BI_RGB.0;
 
     let mut bits: *mut c_void = ptr::null_mut();
-    let dib = CreateDIBSection(dc, &bmi as *const _, DIB_RGB_COLORS, &mut bits, None, 0).unwrap_or_default();
+    let dib = CreateDIBSection(dc, &bmi as *const _, DIB_RGB_COLORS, &mut bits, None, 0)
+        .unwrap_or_default();
     let old = SelectObject(dc, HGDIOBJ(dib.0));
 
     let face = wide("Segoe UI");
@@ -734,15 +821,46 @@ unsafe fn make_gfx(w: i32, h: i32, s: f32) -> Gfx {
     // (высота, ширина, escapement, orientation, weight, italic, underline,
     //  strikeout, charset, outprec, clipprec, quality, pitchandfamily)
     let f_bold = CreateFontW(
-        if h_big == 0 { -1 } else { h_big }, 0, 0, 0, 700, 0, 0, 0,
-        1, 0, 0, 4, 0x22, PCWSTR(face.as_ptr()),
+        if h_big == 0 { -1 } else { h_big },
+        0,
+        0,
+        0,
+        700,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        4,
+        0x22,
+        PCWSTR(face.as_ptr()),
     );
     let f_small = CreateFontW(
-        if h_small == 0 { -1 } else { h_small }, 0, 0, 0, 400, 0, 0, 0,
-        1, 0, 0, 4, 0x22, PCWSTR(face.as_ptr()),
+        if h_small == 0 { -1 } else { h_small },
+        0,
+        0,
+        0,
+        400,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        4,
+        0x22,
+        PCWSTR(face.as_ptr()),
     );
 
-    Gfx { _dib: dib, dc, bits: bits as *mut u32, _old: old, f_bold, f_small }
+    Gfx {
+        _dib: dib,
+        dc,
+        bits: bits as *mut u32,
+        _old: old,
+        f_bold,
+        f_small,
+    }
 }
 
 // ── позиция: экран делим 3×2, нумерация снизу вверх по колонкам ───────────────
@@ -756,7 +874,12 @@ fn close_center(w: i32, _h: i32, s: f32) -> (i32, i32) {
 fn close_hit(screen: POINT, w: i32, h: i32, s: f32) -> RECT {
     let c = close_center(w, h, s);
     let pad = (11.0 * s) as i32;
-    RECT { left: screen.x + c.0 - pad, top: screen.y + c.1 - pad, right: screen.x + c.0 + pad, bottom: screen.y + c.1 + pad }
+    RECT {
+        left: screen.x + c.0 - pad,
+        top: screen.y + c.1 - pad,
+        right: screen.x + c.0 + pad,
+        bottom: screen.y + c.1 + pad,
+    }
 }
 
 fn cfg_file(name: &str) -> Option<std::path::PathBuf> {
@@ -811,11 +934,7 @@ fn load_config() -> Config {
         match k.as_str() {
             "zone" => c.zone = v.parse().ok(),
             "interval" => c.interval = v.parse().ok(),
-            "interface" => {
-                if !v.is_empty() {
-                    c.interface = Some(v)
-                }
-            }
+            "interface" if !v.is_empty() => c.interface = Some(v),
             _ => {}
         }
     }
@@ -875,9 +994,9 @@ static mut APP: *mut App = ptr::null_mut();
 unsafe fn set_interactive(hwnd: HWND, on: bool) {
     let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
     let want = if on {
-        ex & !(WS_EX_TRANSPARENT.0 as u32)
+        ex & !WS_EX_TRANSPARENT.0
     } else {
-        ex | WS_EX_TRANSPARENT.0 as u32
+        ex | WS_EX_TRANSPARENT.0
     };
     if want == ex {
         return;
@@ -923,7 +1042,7 @@ const ID_TRAY: u32 = 0x564E5354; // "VNST"
 const WM_TRAY: u32 = WM_APP + 1;
 
 unsafe fn tray_add(hwnd: HWND) -> bool {
-    let hinst = HINSTANCE(hwnd.0 as *mut std::ffi::c_void);
+    let hinst = HINSTANCE(hwnd.0);
     let icon = LoadIconW(hinst, PCWSTR(1usize as *const u16)).unwrap_or_default();
     let mut d = NOTIFYICONDATAW {
         cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
@@ -982,7 +1101,12 @@ unsafe fn tray_menu(hwnd: HWND) {
     let _ = AppendMenuW(h, MF_SEPARATOR, 0, PCWSTR::null());
 
     for z in 1..=6u32 {
-        let buf = wide(&format!("Zone {}  (col {}, row {})", z, (z - 1) / 2, (z - 1) % 2));
+        let buf = wide(&format!(
+            "Zone {}  (col {}, row {})",
+            z,
+            (z - 1) / 2,
+            (z - 1) % 2
+        ));
         let _ = AppendMenuW(h, MF_STRING, sid, PCWSTR(buf.as_ptr()));
         zone_items.push((z, sid));
         sid += 1;
@@ -997,16 +1121,8 @@ unsafe fn tray_menu(hwnd: HWND) {
     let _ = GetCursorPos(&mut p);
     SetForegroundWindow(hwnd);
     // С TPM_RETURNCMD выбранный id возвращается прямо в результате, без WM_COMMAND.
-    let cmd = TrackPopupMenu(
-        h,
-        TPM_RIGHTBUTTON | TPM_RETURNCMD,
-        p.x,
-        p.y,
-        0,
-        hwnd,
-        None,
-    )
-    .0 as usize;
+    let cmd =
+        TrackPopupMenu(h, TPM_RIGHTBUTTON | TPM_RETURNCMD, p.x, p.y, 0, hwnd, None).0 as usize;
     let _ = DestroyMenu(h);
 
     if cmd == id_hide {
@@ -1019,7 +1135,15 @@ unsafe fn tray_menu(hwnd: HWND) {
             if cmd == id {
                 app.pos = compute_pos(z, app.size);
                 app.zone = z;
-                SetWindowPos(hwnd, HWND_TOPMOST, app.pos.0, app.pos.1, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+                SetWindowPos(
+                    hwnd,
+                    HWND_TOPMOST,
+                    app.pos.0,
+                    app.pos.1,
+                    0,
+                    0,
+                    SWP_NOSIZE | SWP_NOACTIVATE,
+                );
                 save_pos(app.pos);
                 save_config(&app.cfg, app.zone, app.interval);
                 app.render();
@@ -1035,8 +1159,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
     let app = &mut *APP;
     match msg {
         WM_TIMER => {
-            match wp.0 as usize {
-                1 => app.poll(),      // статистика, раз в секунду
+            match wp.0 {
+                1 => app.poll(),        // статистика, раз в секунду
                 _ => update_hover(app), // наведение, 16 раз в секунду
             }
             LRESULT(0)
@@ -1070,16 +1194,25 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
         }
         WM_CREATE => {
             // Иконка из ресурса PE (id = 1). WS_EX_NOACTIVATE этому не мешает.
-            let hinst = HINSTANCE(hwnd.0 as *mut std::ffi::c_void);
+            let hinst = HINSTANCE(hwnd.0);
             if let Ok(big) = LoadIconW(hinst, PCWSTR(1usize as *const u16)) {
-                SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_SMALL as usize), LPARAM(big.0 as isize));
+                SendMessageW(
+                    hwnd,
+                    WM_SETICON,
+                    WPARAM(ICON_SMALL as usize),
+                    LPARAM(big.0 as isize),
+                );
             }
             LRESULT(0)
         }
         WM_DISPLAYCHANGE | WM_DPICHANGED => {
             // Сменилось разрешение, монитор или масштаб: пересчитываем геометрию.
             // Иначе на ноутбуке после подключения внешнего монитора плашка уезжает.
-            let dpi = if GetDpiForSystem() > 0 { GetDpiForSystem() } else { 96 };
+            let dpi = if GetDpiForSystem() > 0 {
+                GetDpiForSystem()
+            } else {
+                96
+            };
             let ns = dpi as f32 / 96.0;
             let new_size = ((280.0 * ns) as i32, (66.0 * ns) as i32);
             if new_size != app.size {
@@ -1107,20 +1240,18 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             app.pos = (r.left, r.top);
             LRESULT(0)
         }
-        WM_TRAY => {
-            match lp.0 as u32 {
-                WM_LBUTTONDBLCLK => {
-                    let vis = IsWindowVisible(hwnd).as_bool();
-                    ShowWindow(hwnd, if vis { SW_HIDE } else { SW_SHOWNA });
-                    LRESULT(0)
-                }
-                WM_CONTEXTMENU => {
-                    tray_menu(hwnd);
-                    LRESULT(0)
-                }
-                _ => LRESULT(0),
+        WM_TRAY => match lp.0 as u32 {
+            WM_LBUTTONDBLCLK => {
+                let vis = IsWindowVisible(hwnd).as_bool();
+                ShowWindow(hwnd, if vis { SW_HIDE } else { SW_SHOWNA });
+                LRESULT(0)
             }
-        }
+            WM_CONTEXTMENU => {
+                tray_menu(hwnd);
+                LRESULT(0)
+            }
+            _ => LRESULT(0),
+        },
         WM_HOTKEY => match wp.0 as u32 {
             1 => {
                 // Ctrl+Alt+V — показать/скрыть
@@ -1197,7 +1328,9 @@ fn main() {
                 }
                 "--help" | "-h" => {
                     println!("tunnelstat");
-                    println!("  --zone 1..6      screen cell (3x2 grid, numbered bottom-up per column)");
+                    println!(
+                        "  --zone 1..6      screen cell (3x2 grid, numbered bottom-up per column)"
+                    );
                     println!("  --interval MS    poll interval, min 200 (default 1000)");
                     println!("  --reset          forget saved position");
                     println!("  --demo           cycle all states (for screenshots)");
